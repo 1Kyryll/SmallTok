@@ -1,5 +1,5 @@
-from src import Tokenizer
-from src.tokenizer import get_stats, merge, check_merge
+from src.tokenizer import Tokenizer
+from src.tokenizer import get_stats, merge
 
 class Basic(Tokenizer):
     """Basic tokenizer implementation that uses a simple byte-level BPE algorithm."""

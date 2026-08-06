@@ -55,8 +55,8 @@ class Tokenizer:
 
     def __init__(self, merge_count=20):
         self.merges_count = merge_count
-        self.vocab = self._build_vocab() 
         self.merges = {}
+        self.vocab = self._build_vocab()
 
     def _build_vocab(self):
         vocab = {idx: bytes([idx]) for idx in range(256)}
