@@ -1,3 +1,6 @@
+import os
+import tempfile
+
 from src.basic import Basic
 from src.regex import RegexTokenizer, GPT2_PAT, GPT4_PAT
 
@@ -106,3 +109,30 @@ try:
     print(f"  round-trip:       {'OK' if real.decode(mine) == SAMPLE else 'FAIL'}")
 except ImportError:
     print("\n(install tiktoken to compare against the real GPT-2 tokenizer)")
+
+# special tokens are spliced in whole, never merged into their neighbours
+eot = 256 + len(gpt4.merges)
+gpt4.register_special_tokens({"<|endoftext|>": eot})
+tagged = "first document<|endoftext|>second document"
+
+print("\nSpecial tokens")
+print(f"  allowed_special='all':  {eot in gpt4.encode(tagged, allowed_special='all')} (id {eot} present)")
+print(f"  allowed_special='none': {eot in gpt4.encode(tagged, allowed_special='none')} (encoded as plain text)")
+try:
+    gpt4.encode(tagged)
+except ValueError:
+    print("  default:                refuses text containing a special token")
+print(f"  round-trip:             "
+      f"{'OK' if gpt4.decode(gpt4.encode(tagged, allowed_special='all')) == tagged else 'FAIL'}")
+
+# save / load
+with tempfile.TemporaryDirectory() as tmp:
+    prefix = os.path.join(tmp, "gpt4")
+    gpt4.save(prefix)
+    reloaded = RegexTokenizer().load(prefix + ".model")
+
+    same = reloaded.encode(TRAIN_TEXT) == gpt4.encode(TRAIN_TEXT)
+    print("\nSave / load")
+    print(f"  wrote {os.path.basename(prefix)}.model and {os.path.basename(prefix)}.vocab")
+    print(f"  merges + specials restored: {reloaded.merges == gpt4.merges and reloaded.special_tokens == gpt4.special_tokens}")
+    print(f"  encodes identically:        {'OK' if same else 'FAIL'}")
