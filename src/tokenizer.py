@@ -1,34 +1,34 @@
 """Base tokenizer class with helper functions for tokenization."""
 
-def get_stats(ids, counts=None): 
+def get_stats(ids, counts=None):
     """Count common pair appearances in a list of ids."""
     counts = {} if counts is None else counts
 
     for pair in zip(ids, ids[1:]):
         counts[pair] = counts.get(pair, 0) + 1
 
-    return counts 
+    return counts
 
-def merge(ids, pair, idx): 
+def merge(ids, pair, idx):
     """Merge a pair into new idx. E.g. (116, 32) -> 256"""
     newids = []
-    i = 0 
+    i = 0
 
-    while i < len(ids): 
-        if ids[i] == pair[0] and i < len(ids) - 1 and ids[i+1] == pair[1]: 
+    while i < len(ids):
+        if ids[i] == pair[0] and i < len(ids) - 1 and ids[i+1] == pair[1]:
             newids.append(idx)
             i += 2
-        else: 
+        else:
             newids.append(ids[i])
             i += 1
 
-    return newids 
+    return newids
 
 
-def check_merge(ids, new_ids, pair, idx):
-    """Check that a merge was done correctly."""
+def check_merge(ids, new_ids, pair, idx, verbose=True):
+    """Check that a merge was done correctly. Returns True if all checks pass."""
     remaining = sum(1 for a, b in zip(new_ids, new_ids[1:]) if (a, b) == pair)
-    
+
     occurrences = 0
     i = 0
     while i < len(ids) - 1:
@@ -37,32 +37,102 @@ def check_merge(ids, new_ids, pair, idx):
             i += 2
         else:
             i += 1
-    
+
     len_ok = len(new_ids) == len(ids) - occurrences
 
     expanded = []
     for t in new_ids:
         expanded.extend(pair if t == idx else [t])
-    
-    print(f"occurrences found:   {occurrences}")
-    print(f"pair left in output: {remaining}  (expected 0)")
-    print(f"len {len(ids)} -> {len(new_ids)}, expected {len(ids) - occurrences}  {'OK' if len_ok else 'FAIL'}")
-    print(f"round-trip:          {'OK' if expanded == ids else 'FAIL'}")
-    print(f"idx count:           {new_ids.count(idx)}  (expected {occurrences})")
 
-class Tokenizer: 
-    """Base tokenizer class with helper functions for tokenization."""
+    if verbose:
+        print(f"occurrences found:   {occurrences}")
+        print(f"pair left in output: {remaining}  (expected 0)")
+        print(f"len {len(ids)} -> {len(new_ids)}, expected {len(ids) - occurrences}  {'OK' if len_ok else 'FAIL'}")
+        print(f"round-trip:          {'OK' if expanded == ids else 'FAIL'}")
+        print(f"idx count:           {new_ids.count(idx)}  (expected {occurrences})")
 
-    def __init__(self, merge_count=20):
-        self.merges_count = merge_count
-        self.merges = {}
+    return len_ok and remaining == 0 and expanded == ids and new_ids.count(idx) == occurrences
+
+
+class Tokenizer:
+    """Base byte-level BPE tokenizer.
+
+    Subclasses decide how the text is split up before training/encoding
+    (not at all for `Basic`, on a regex for `RegexTokenizer`); everything
+    else - the merge loop, the vocab and decoding - lives here.
+    """
+
+    def __init__(self):
+        self.merges = {}            # (int, int) -> int
+        self.byte_shuffle = None    # optional raw byte -> id permutation (for GPT-2/4 compat)
+        self.inverse_byte_shuffle = None
         self.vocab = self._build_vocab()
 
     def _build_vocab(self):
+        """Derive the id -> bytes table from the merges. Order matters: a merge
+        can only reference ids that were created before it."""
         vocab = {idx: bytes([idx]) for idx in range(256)}
-        for (p0, p1), idx in self.merges.items(): 
+        for (p0, p1), idx in self.merges.items():
             vocab[idx] = vocab[p0] + vocab[p1]
         return vocab
+
+    def _to_ids(self, text_bytes):
+        """Raw bytes -> starting ids. The single place `byte_shuffle` is applied,
+        so training and encoding can never disagree about it."""
+        if self.byte_shuffle is not None:
+            return [self.byte_shuffle[b] for b in text_bytes]
+        return list(text_bytes)
+
+    def _train_chunks(self, chunks, num_merges, verbose=False):
+        """Run `num_merges` BPE merges over a list of `bytes` chunks.
+
+        Pair counts are accumulated across ALL chunks, but merging happens
+        within each chunk only - that is what stops a merge from ever
+        spanning a chunk boundary.
+        """
+        self.merges = {}
+        ids_list = [self._to_ids(chunk) for chunk in chunks]
+
+        for i in range(num_merges):
+            stats = {}
+            for ids in ids_list:
+                get_stats(ids, stats)
+            if not stats:
+                break                          # nothing left to merge
+
+            top_pair = max(stats, key=stats.get)
+            if stats[top_pair] < 2:
+                break                          # every pair is unique, merging buys nothing
+
+            new_id = 256 + i
+            ids_list = [merge(ids, top_pair, new_id) for ids in ids_list]
+            self.merges[top_pair] = new_id
+
+            if verbose:
+                print(f"merge {i+1}/{num_merges}: {top_pair} -> {new_id} "
+                      f"({stats[top_pair]} occurrences)")
+
+        self.vocab = self._build_vocab()
+        return ids_list
+
+    def _encode_chunk(self, text_bytes):
+        """BPE-encode a bytes object, applying merges in the order they were learned."""
+        ids = self._to_ids(text_bytes)
+
+        while len(ids) >= 2:
+            stats = get_stats(ids)
+            # the eligible pair with the lowest merge index = the earliest merge learned
+            pair = min(stats, key=lambda p: self.merges.get(p, float("inf")))
+            if pair not in self.merges:
+                break
+
+            ids = merge(ids, pair, self.merges[pair])
+
+        return ids
+
+    def train(self, text, num_merges, verbose=False):
+        """Learn `num_merges` merges from `text`."""
+        raise NotImplementedError("Subclasses should implement this method.")
 
     def encode(self, text):
         """Encode a string into a list of token ids."""
@@ -70,6 +140,14 @@ class Tokenizer:
 
     def decode(self, ids):
         """Decode a list of token ids back into a string."""
-        raise NotImplementedError("Subclasses should implement this method.")
+        try:
+            text_bytes = b"".join(self.vocab[idx] for idx in ids)
+        except KeyError as e:
+            raise ValueError(f"id {e.args[0]} is not in the vocab "
+                             f"(vocab size is {len(self.vocab)})") from e
 
-    
+        if self.inverse_byte_shuffle is not None:
+            text_bytes = bytes(self.inverse_byte_shuffle[b] for b in text_bytes)
+
+        # a token can end mid-codepoint, so invalid utf-8 is expected, not a bug
+        return text_bytes.decode("utf-8", errors="replace")
