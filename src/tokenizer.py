@@ -1,6 +1,17 @@
 """Base tokenizer class with helper functions for tokenization."""
 
 import re
+import unicodedata
+
+MODEL_VERSION = "smalltok-v1"
+
+
+def render_token(token_bytes):
+    """Show a token's bytes readably: undecodable bytes and control characters
+    become escapes, so one token always prints as one line."""
+    text = token_bytes.decode("utf-8", errors="replace")
+    return "".join(ch if unicodedata.category(ch)[0] != "C" else repr(ch)[1:-1]
+                   for ch in text)
 
 
 def get_stats(ids, counts=None):
@@ -67,6 +78,7 @@ class Tokenizer:
 
     def __init__(self):
         self.merges = {}            # (int, int) -> int
+        self.pattern = ""           # split pattern, empty when the text isn't chunked
         self.special_tokens = {}    # str -> int, e.g. {"<|endoftext|>": 50256}
         self.inverse_special_tokens = {}
         self.byte_shuffle = None    # optional raw byte -> id permutation (for GPT-2/4 compat)
@@ -97,6 +109,10 @@ class Tokenizer:
         for (p0, p1), idx in self.merges.items():
             vocab[idx] = vocab[p0] + vocab[p1]
         return vocab
+
+    def _set_pattern(self, pattern):
+        """Hook so `load` can restore the split pattern on subclasses that use one."""
+        self.pattern = pattern
 
     def _to_ids(self, text_bytes):
         """Raw bytes -> starting ids. The single place `byte_shuffle` is applied,
@@ -218,3 +234,76 @@ class Tokenizer:
 
         # a token can end mid-codepoint, so invalid utf-8 is expected, not a bug
         return b"".join(parts).decode("utf-8", errors="replace")
+
+    def save(self, prefix):
+        """Write `prefix.model` (reloadable) and `prefix.vocab` (for humans).
+
+        Only the .model file is ever read back. The .vocab file is lossy - it
+        renders undecodable bytes - and exists purely to inspect what was
+        learned.
+        """
+        with open(prefix + ".model", "w", encoding="utf-8") as f:
+            f.write(f"{MODEL_VERSION} {type(self).__name__}\n")
+            f.write(self.pattern + "\n")
+
+            f.write(f"{len(self.special_tokens)}\n")
+            for token, idx in self.special_tokens.items():
+                f.write(f"{token} {idx}\n")
+
+            if self.byte_shuffle is None:
+                f.write("-\n")
+            else:
+                f.write(" ".join(str(self.byte_shuffle[i]) for i in range(256)) + "\n")
+
+            # ids are implied by position (the first merge is 256), so only the pair is stored
+            for (p0, p1), _ in sorted(self.merges.items(), key=lambda kv: kv[1]):
+                f.write(f"{p0} {p1}\n")
+
+        inverted = {idx: pair for pair, idx in self.merges.items()}
+        with open(prefix + ".vocab", "w", encoding="utf-8") as f:
+            for idx, token in sorted(self.vocab.items()):
+                if idx in inverted:
+                    p0, p1 = inverted[idx]
+                    f.write(f"[{render_token(self.vocab[p0])}][{render_token(self.vocab[p1])}] -> "
+                            f"[{render_token(token)}] {idx}\n")
+                else:
+                    f.write(f"[{render_token(token)}] {idx}\n")
+            for token, idx in self.special_tokens.items():
+                f.write(f"[{token}] {idx} (special)\n")
+
+    def load(self, path):
+        """Restore a tokenizer written by `save`, in place."""
+        if not path.endswith(".model"):
+            raise ValueError(f"expected a .model file, got {path!r}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            version, class_name = f.readline().rstrip("\n").split(" ", 1)
+            if version != MODEL_VERSION:
+                raise ValueError(f"{path} is {version}, this build reads {MODEL_VERSION}")
+            # a regex model loaded into Basic would tokenize differently and silently
+            if class_name != type(self).__name__:
+                raise ValueError(f"{path} was saved from {class_name}, "
+                                 f"cannot load it into {type(self).__name__}")
+
+            self._set_pattern(f.readline().rstrip("\n"))
+
+            special_tokens = {}
+            for _ in range(int(f.readline())):
+                token, idx = f.readline().rstrip("\n").rsplit(" ", 1)
+                special_tokens[token] = int(idx)
+
+            shuffle_line = f.readline().rstrip("\n")
+            if shuffle_line == "-":
+                self.byte_shuffle = self.inverse_byte_shuffle = None
+            else:
+                self.byte_shuffle = {i: int(v) for i, v in enumerate(shuffle_line.split())}
+                self.inverse_byte_shuffle = {v: k for k, v in self.byte_shuffle.items()}
+
+            self.merges = {}
+            for i, line in enumerate(f):
+                p0, p1 = line.split()
+                self.merges[(int(p0), int(p1))] = 256 + i
+
+        self.vocab = self._build_vocab()
+        self.register_special_tokens(special_tokens)
+        return self

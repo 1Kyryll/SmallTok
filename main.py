@@ -95,7 +95,7 @@ try:
 
     from src.gpt2 import GPT2Tokenizer
 
-    real = GPT2Tokenizer()
+    real = GPT2Tokenizer.from_tiktoken()
     reference = tiktoken.get_encoding("gpt2")
     mine, theirs = real.encode(SAMPLE), reference.encode(SAMPLE)
 

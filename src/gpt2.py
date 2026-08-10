@@ -45,12 +45,22 @@ class GPT2Tokenizer(RegexTokenizer):
     """
 
     def __init__(self):
+        # deliberately empty of merges: this is also the target of `load`, which
+        # must work on machines without tiktoken installed
+        super().__init__(GPT2_PAT)
+
+    @classmethod
+    def from_tiktoken(cls):
+        """Build from the installed tiktoken's gpt2 encoding."""
         import tiktoken
 
         enc = tiktoken.get_encoding("gpt2")
         ranks = enc._mergeable_ranks
 
-        super().__init__(GPT2_PAT, byte_shuffle={i: ranks[bytes([i])] for i in range(256)})
-        self.merges = recover_merges(ranks)
-        self.vocab = self._build_vocab()
-        self.register_special_tokens(enc._special_tokens)
+        tokenizer = cls()
+        tokenizer.byte_shuffle = {i: ranks[bytes([i])] for i in range(256)}
+        tokenizer.inverse_byte_shuffle = {v: k for k, v in tokenizer.byte_shuffle.items()}
+        tokenizer.merges = recover_merges(ranks)
+        tokenizer.vocab = tokenizer._build_vocab()
+        tokenizer.register_special_tokens(enc._special_tokens)
+        return tokenizer

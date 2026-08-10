@@ -19,11 +19,14 @@ class RegexTokenizer(Tokenizer):
 
     def __init__(self, pattern=GPT4_PAT, byte_shuffle=None):
         super().__init__()
-        self.pattern = pattern
-        self.compiled_pattern = re.compile(pattern)
+        self._set_pattern(pattern)
         if byte_shuffle is not None:
             self.byte_shuffle = byte_shuffle
             self.inverse_byte_shuffle = {v: k for k, v in byte_shuffle.items()}
+
+    def _set_pattern(self, pattern):
+        self.pattern = pattern
+        self.compiled_pattern = re.compile(pattern)
 
     def train(self, text, num_merges, verbose=False):
         """Learn `num_merges` merges from `text`, one id-list per regex chunk."""
