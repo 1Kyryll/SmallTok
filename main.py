@@ -88,3 +88,21 @@ print(f"  GPT-4 pattern: {n4} tokens  ({n2 / n4:.2f}x better)")
 # a token can end mid-codepoint, so decoding a partial sequence must not crash
 partial = gpt4.encode("👋")[:1]
 print(f"\nPartial emoji token {partial} decodes to {gpt4.decode(partial)!r} (replacement char, no crash)")
+
+# the real thing: load GPT-2's 50k merges and check we reproduce tiktoken exactly
+try:
+    import tiktoken
+
+    from src.gpt2 import GPT2Tokenizer
+
+    real = GPT2Tokenizer()
+    reference = tiktoken.get_encoding("gpt2")
+    mine, theirs = real.encode(SAMPLE), reference.encode(SAMPLE)
+
+    print("\nGPT-2 (loaded from tiktoken)")
+    print(f"  merges:      {len(real.merges)}")
+    print(f"  {len(SAMPLE.encode('utf-8'))} bytes -> {len(mine)} tokens")
+    print(f"  matches tiktoken: {'OK' if mine == theirs else 'FAIL'}")
+    print(f"  round-trip:       {'OK' if real.decode(mine) == SAMPLE else 'FAIL'}")
+except ImportError:
+    print("\n(install tiktoken to compare against the real GPT-2 tokenizer)")
