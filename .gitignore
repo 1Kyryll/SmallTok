@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+# trained tokenizer artifacts
+*.model
+*.vocab
