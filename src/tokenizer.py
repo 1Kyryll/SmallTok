@@ -1,5 +1,8 @@
 """Base tokenizer class with helper functions for tokenization."""
 
+import re
+
+
 def get_stats(ids, counts=None):
     """Count common pair appearances in a list of ids."""
     counts = {} if counts is None else counts
@@ -64,9 +67,28 @@ class Tokenizer:
 
     def __init__(self):
         self.merges = {}            # (int, int) -> int
+        self.special_tokens = {}    # str -> int, e.g. {"<|endoftext|>": 50256}
+        self.inverse_special_tokens = {}
         self.byte_shuffle = None    # optional raw byte -> id permutation (for GPT-2/4 compat)
         self.inverse_byte_shuffle = None
         self.vocab = self._build_vocab()
+
+    def register_special_tokens(self, special_tokens):
+        """Register out-of-band tokens like "<|endoftext|>".
+
+        These never come out of BPE - they live above the merged vocab and are
+        spliced in by `encode`, so their text can never be split up or merged
+        into anything else.
+        """
+        first_free = 256 + len(self.merges)
+        for token, idx in special_tokens.items():
+            if idx < first_free:
+                raise ValueError(
+                    f"special token {token!r} wants id {idx}, which collides with "
+                    f"the BPE vocab (ids 0..{first_free - 1})")
+
+        self.special_tokens = dict(special_tokens)
+        self.inverse_special_tokens = {v: k for k, v in special_tokens.items()}
 
     def _build_vocab(self):
         """Derive the id -> bytes table from the merges. Order matters: a merge
@@ -134,20 +156,65 @@ class Tokenizer:
         """Learn `num_merges` merges from `text`."""
         raise NotImplementedError("Subclasses should implement this method.")
 
-    def encode(self, text):
-        """Encode a string into a list of token ids."""
+    def encode_ordinary(self, text):
+        """Encode a string, treating special-token text as ordinary text."""
         raise NotImplementedError("Subclasses should implement this method.")
+
+    def encode(self, text, allowed_special="none_raise"):
+        """Encode a string into a list of token ids.
+
+        `allowed_special` controls what happens to registered special tokens:
+          "none_raise"  don't recognise them, but refuse text containing one
+                        (the default - stops user text smuggling in a control
+                        token, which is why tiktoken defaults the same way)
+          "all"         recognise every registered special token
+          "none"        encode them as ordinary text
+          a collection  recognise only those
+        """
+        if allowed_special == "all":
+            special = self.special_tokens
+        elif allowed_special == "none":
+            special = {}
+        elif allowed_special == "none_raise":
+            special = {}
+            for token in self.special_tokens:
+                if token in text:
+                    raise ValueError(
+                        f"text contains special token {token!r}; pass "
+                        f"allowed_special='all' to encode it as a token, or "
+                        f"'none' to encode it as plain text")
+        else:
+            special = {k: v for k, v in self.special_tokens.items() if k in set(allowed_special)}
+
+        if not special:
+            return self.encode_ordinary(text)
+
+        # longest first, so "<|end|>" can't shadow "<|endoftext|>"
+        pattern = "(" + "|".join(re.escape(k) for k in sorted(special, key=len, reverse=True)) + ")"
+
+        ids = []
+        for part in re.split(pattern, text):
+            if part in special:
+                ids.append(special[part])
+            elif part:
+                ids.extend(self.encode_ordinary(part))
+        return ids
 
     def decode(self, ids):
         """Decode a list of token ids back into a string."""
-        try:
-            text_bytes = b"".join(self.vocab[idx] for idx in ids)
-        except KeyError as e:
-            raise ValueError(f"id {e.args[0]} is not in the vocab "
-                             f"(vocab size is {len(self.vocab)})") from e
-
-        if self.inverse_byte_shuffle is not None:
-            text_bytes = bytes(self.inverse_byte_shuffle[b] for b in text_bytes)
+        parts = []
+        for idx in ids:
+            if idx in self.vocab:
+                chunk = self.vocab[idx]
+                if self.inverse_byte_shuffle is not None:
+                    chunk = bytes(self.inverse_byte_shuffle[b] for b in chunk)
+                parts.append(chunk)
+            elif idx in self.inverse_special_tokens:
+                # a special token carries its own text, and is never byte-shuffled
+                parts.append(self.inverse_special_tokens[idx].encode("utf-8"))
+            else:
+                raise ValueError(f"id {idx} is not in the vocab "
+                                 f"(vocab size is {len(self.vocab)})")
 
         # a token can end mid-codepoint, so invalid utf-8 is expected, not a bug
-        return text_bytes.decode("utf-8", errors="replace")
+        return b"".join(parts).decode("utf-8", errors="replace")

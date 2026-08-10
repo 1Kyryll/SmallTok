@@ -30,8 +30,8 @@ class RegexTokenizer(Tokenizer):
         chunks = [chunk.encode("utf-8") for chunk in self.compiled_pattern.findall(text)]
         self._train_chunks(chunks, num_merges, verbose)
 
-    def encode(self, text):
-        """Encode a string into a list of token ids, chunk by chunk."""
+    def encode_ordinary(self, text):
+        """Encode a string chunk by chunk, treating special-token text as ordinary."""
         ids = []
         for chunk in self.compiled_pattern.findall(text):
             ids.extend(self._encode_chunk(chunk.encode("utf-8")))

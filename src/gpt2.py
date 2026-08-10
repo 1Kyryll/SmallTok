@@ -53,3 +53,4 @@ class GPT2Tokenizer(RegexTokenizer):
         super().__init__(GPT2_PAT, byte_shuffle={i: ranks[bytes([i])] for i in range(256)})
         self.merges = recover_merges(ranks)
         self.vocab = self._build_vocab()
+        self.register_special_tokens(enc._special_tokens)

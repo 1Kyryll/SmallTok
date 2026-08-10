@@ -12,6 +12,6 @@ class Basic(Tokenizer):
         """Learn `num_merges` merges from `text`."""
         self._train_chunks([text.encode("utf-8")], num_merges, verbose)
 
-    def encode(self, text):
-        """Encode a string into a list of token ids."""
+    def encode_ordinary(self, text):
+        """Encode a string, treating special-token text as ordinary text."""
         return self._encode_chunk(text.encode("utf-8"))
