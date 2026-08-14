@@ -49,6 +49,15 @@ tokenizer.save("gpt2")                      # afterwards it loads without tiktok
 `bytes -> rank` table by replaying BPE on each token's own bytes. The result
 encodes byte-identically to `tiktoken.get_encoding("gpt2")`.
 
+## Docs
+
+| Doc | What it covers |
+| --- | --- |
+| [tokenization_basics.md](docs/tokenization_basics.md) | Why a vocabulary is needed, and why it starts from 256 UTF-8 bytes |
+| [bpe_algorithm.md](docs/bpe_algorithm.md) | The merge loop itself |
+| [chunking.md](docs/chunking.md) | Why the text is split on a regex first, and what it costs |
+| [encoding.md](docs/encoding.md) | Replaying merges, decoding, and special tokens |
+
 ## Layout
 
 | File | What's in it |
@@ -65,10 +74,10 @@ else lives in the base class.
 ## Why chunking matters
 
 `Basic` lets a merge span any two adjacent bytes, so it will happily learn a
-token like `"dog."` or `" the12"`. Splitting on a regex first and running BPE
-inside each chunk independently keeps merges from crossing between letters,
-digits and punctuation. On Python source, GPT-4's pattern beats GPT-2's mostly
-because it handles runs of indentation better.
+token like `"dog."` — on this repo's corpus, 113 of its 256 learned tokens
+cross a word or punctuation boundary. Splitting on a regex first keeps merges
+inside a chunk, which costs some raw compression and buys consistency.
+Details and numbers in [docs/chunking.md](docs/chunking.md).
 
 ## Not implemented
 
